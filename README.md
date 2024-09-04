@@ -27,7 +27,7 @@ By using this smart contract, participants in the package transportation process
 
 ## Features
 
-- **Support for Multiple Transactions:** The contract can handle multiple transactions simultaneously, increasing its scalability.
+- **Support for Multiple Transactions:** This smart contract manages one transaction per instance of the contract. This means that for each new transaction between a sender and a driver, a new instance of the contract is created. While the current implementation does not support handling multiple transactions within a single contract instance, the structure ensures secure and transparent processing of each transaction individually. For scalability and support for a larger number of transactions, the application can generate multiple contract instances, with each contract managing a separate transaction.
 - **Automated Fund Management:** Funds are automatically distributed without the need for manual intervention.
 - **Blockchain Tracking:** All transactions are transparently tracked on the blockchain, allowing all participants to view the status of transactions.
 
