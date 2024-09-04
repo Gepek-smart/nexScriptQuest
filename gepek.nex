@@ -1,0 +1,177 @@
+// Description: This smart contract is designed for the Gepek application to facilitate secure and transparent financial transactions between senders and drivers in a package carpooling service. The contract manages funds, ensuring drivers are paid upon successful delivery and allows for refunds to senders if the delivery fails. It also includes mechanisms for dispute resolution and emergency refunds.
+
+pragma nexscript ^0.1.0;
+
+contract CentralizedCarpoolingContract {
+
+    // Struct to represent a single transaction between a sender and a driver
+    struct Transaction {
+        pubkey senderPk;      // Public key of the sender
+        pubkey driverPk;      // Public key of the driver
+        int amount;           // Amount of funds locked in the transaction
+        int creationTime;     // Timestamp of when the transaction was created
+        int timeout;          // Timeout period after which the sender can reclaim funds
+        bool isCompleted;     // Boolean flag to indicate if the transaction is completed
+    }
+
+    // Mapping to store all transactions using their unique ID as the key
+    mapping(int => Transaction) public transactions;
+
+    // Counter to assign unique IDs to each transaction
+    int public transactionCounter;
+
+    // Miner fee that will be deducted from each transaction
+    int public minerFee;
+
+    // Events to be emitted for various actions
+    event TransactionCreated(int transactionId, pubkey senderPk, pubkey driverPk, int amount, int timeout);
+    event FundsReleased(address recipient, int amount);
+    event RefundIssued(address sender, int amount);
+    event DeliveryDeadlineMissed();
+
+    // Constructor to initialize the miner fee and transaction counter
+    constructor(int _minerFee) {
+        minerFee = _minerFee;
+        transactionCounter = 0;
+    }
+
+    // Internal function to validate a transaction's existence and state
+    function validateTransaction(int transactionId) internal view returns (Transaction storage) {
+        require(transactionId >= 0 && transactionId < transactionCounter, "Invalid transaction ID");
+        Transaction storage tx = transactions[transactionId];
+        require(!tx.isCompleted, "Transaction already completed");
+        return tx;
+    }
+
+    // Function to create a new transaction
+    function createTransaction(pubkey senderPk, pubkey driverPk, int amount, int timeout) public returns (int) {
+        require(amount > 0, "Amount must be positive");
+
+        // Initialize the new transaction and store it in the mapping
+        transactions[transactionCounter] = Transaction(senderPk, driverPk, amount, block.timestamp, timeout, false);
+
+        // Emit an event to notify that a new transaction has been created
+        emit TransactionCreated(transactionCounter, senderPk, driverPk, amount, timeout);
+
+        // Increment the transaction counter and return the ID of the new transaction
+        transactionCounter++;
+        return transactionCounter - 1;
+    }
+
+    // Function to confirm the delivery of the package and release funds to the driver
+    function confirmDelivery(int transactionId, sig driverSig) public {
+        // Validate the transaction
+        Transaction storage tx = validateTransaction(transactionId);
+
+        // Verify the driver's signature to confirm their identity
+        require(checkSig(driverSig, tx.driverPk));
+
+        // Ensure the delivery is confirmed before the timeout period ends
+        require(block.timestamp < tx.creationTime + tx.timeout, "Delivery deadline exceeded");
+
+        // Calculate the payout amount for the driver after deducting the miner fee
+        int payout = tx.amount - minerFee;
+
+        // Mark the transaction as completed
+        tx.isCompleted = true;
+
+        // Ensure the transaction output correctly locks the funds for the driver
+        bytes recipientLockingBytecode = new LockingBytecodeP2PKT(tx.driverPk);
+        require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+        require(tx.outputs[0].value == payout);
+
+        // Emit an event to notify that funds have been released to the driver
+        emit FundsReleased(tx.driverPk, payout);
+    }
+
+    // Function to allow the sender to reclaim funds if the package is not delivered on time
+    function timeoutRefund(int transactionId, sig senderSig) public {
+        // Validate the transaction
+        Transaction storage tx = validateTransaction(transactionId);
+
+        // Verify the sender's signature to confirm their identity
+        require(checkSig(senderSig, tx.senderPk), "Invalid sender signature");
+
+        // Ensure that the timeout period has passed
+        require(block.timestamp >= tx.creationTime + tx.timeout, "Delivery deadline not reached");
+
+        // Calculate the refund amount after deducting the miner fee
+        int refundAmount = tx.amount - minerFee;
+
+        // Mark the transaction as completed
+        tx.isCompleted = true;
+
+        // Ensure the transaction output correctly locks the funds for the sender
+        bytes senderLockingBytecode = new LockingBytecodeP2PKT(tx.senderPk);
+        require(tx.outputs[0].lockingBytecode == senderLockingBytecode);
+        require(tx.outputs[0].value == refundAmount);
+
+        // Emit an event to notify that a refund has been issued to the sender
+        emit RefundIssued(tx.senderPk, refundAmount);
+    }
+
+    // Function to handle arbitration in case of a dispute between the sender and driver
+    function arbitrate(int transactionId, pubkey arbiterPk, sig arbiterSig, bool inFavorOfSender) public {
+        // Validate the transaction
+        Transaction storage tx = validateTransaction(transactionId);
+
+        // Verify the arbiter's signature to confirm their identity
+        require(checkSig(arbiterSig, arbiterPk), "Invalid arbiter signature");
+
+        if (inFavorOfSender) {
+            // Calculate the refund amount for the sender
+            int refundAmount = tx.amount - minerFee;
+
+            // Mark the transaction as completed
+            tx.isCompleted = true;
+
+            // Ensure the transaction output correctly locks the funds for the sender
+            bytes senderLockingBytecode = new LockingBytecodeP2PKT(tx.senderPk);
+            require(tx.outputs[0].lockingBytecode == senderLockingBytecode);
+            require(tx.outputs[0].value == refundAmount);
+
+            // Emit an event to notify that a refund has been issued to the sender
+            emit RefundIssued(tx.senderPk, refundAmount);
+        } else {
+            // Calculate the payout amount for the driver
+            int payout = tx.amount - minerFee;
+
+            // Mark the transaction as completed
+            tx.isCompleted = true;
+
+            // Ensure the transaction output correctly locks the funds for the driver
+            bytes recipientLockingBytecode = new LockingBytecodeP2PKT(tx.driverPk);
+            require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+            require(tx.outputs[0].value == payout);
+
+            // Emit an event to notify that funds have been released to the driver
+            emit FundsReleased(tx.driverPk, payout);
+        }
+    }
+
+    // Function to allow the sender to reclaim funds in case of network issues or other delays
+    function emergencyRefund(int transactionId, sig senderSig) public {
+        // Validate the transaction
+        Transaction storage tx = validateTransaction(transactionId);
+
+        // Verify the sender's signature to confirm their identity
+        require(checkSig(senderSig, tx.senderPk), "Invalid sender signature");
+
+        // Ensure that 24 hours have passed since the timeout period ended
+        require(block.timestamp >= tx.creationTime + tx.timeout + 24 hours, "Emergency refund not yet available");
+
+        // Calculate the refund amount after deducting the miner fee
+        int refundAmount = tx.amount - minerFee;
+
+        // Mark the transaction as completed
+        tx.isCompleted = true;
+
+        // Ensure the transaction output correctly locks the funds for the sender
+        bytes senderLockingBytecode = new LockingBytecodeP2PKT(tx.senderPk);
+        require(tx.outputs[0].lockingBytecode == senderLockingBytecode);
+        require(tx.outputs[0].value == refundAmount);
+
+        // Emit an event to notify that a refund has been issued to the sender
+        emit RefundIssued(tx.senderPk, refundAmount);
+    }
+}
